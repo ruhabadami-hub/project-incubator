@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { GoogleGenAI, Type } from "@google/genai";
 import { cn, generateId, INITIAL_FILES, buildPreviewContent, getLanguageFromFilename } from './utils';
 import { FileSystem, Message, DeviceFrame, Tab, ProjectFile } from './types';
-import { supabase } from "@/src/integrations/supabase/client";
+import { supabase } from "./src/integrations/supabase/client";
 
 import FileExplorer from './components/FileExplorer';
 import CodeEditor from './components/CodeEditor';
