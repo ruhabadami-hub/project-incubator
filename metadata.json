@@ -1,0 +1,5 @@
+{
+  "name": "EduSpark - AI Game Generator",
+  "description": "An interactive educational game platform where teachers use the Aether AI agent to generate browser-based games within a Golden Shell architecture.",
+  "requestFramePermissions": []
+}
