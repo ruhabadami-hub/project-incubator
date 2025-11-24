@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { GoogleGenAI, Type } from "@google/genai";
 import { cn, generateId, INITIAL_FILES, buildPreviewContent, getLanguageFromFilename } from './utils';
 import { FileSystem, Message, DeviceFrame, Tab, ProjectFile } from './types';
+import { supabase } from "@/src/integrations/supabase/client";
 
 import FileExplorer from './components/FileExplorer';
 import CodeEditor from './components/CodeEditor';
@@ -113,6 +114,8 @@ function App() {
   const [device, setDevice] = useState<DeviceFrame>('desktop');
   const [activeTab, setActiveTab] = useState<Tab>('chat');
   const [isMobileExplorerOpen, setIsMobileExplorerOpen] = useState(false);
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [isLoadingProject, setIsLoadingProject] = useState(true);
 
   // Refs
   const filesRef = useRef(files);
@@ -122,19 +125,70 @@ function App() {
     filesRef.current = files;
   }, [files]);
 
+  // PHASE 4: Load project from Supabase on mount
   useEffect(() => {
-    if (!process.env.API_KEY) {
-        console.error("API_KEY is missing!");
+    const loadProject = async () => {
+      try {
+        // Check URL for projectId parameter
+        const urlParams = new URLSearchParams(window.location.search);
+        const urlProjectId = urlParams.get('projectId');
+        
+        if (urlProjectId) {
+          // Fetch project files from Supabase
+          const { data: projectFiles, error } = await supabase
+            .from('project_files')
+            .select('*')
+            .eq('project_id', urlProjectId);
+          
+          if (error) throw error;
+          
+          if (projectFiles && projectFiles.length > 0) {
+            // Reconstruct FileSystem from database
+            const loadedFiles: FileSystem = { ...INITIAL_FILES };
+            projectFiles.forEach(file => {
+              loadedFiles[file.path] = {
+                name: file.path,
+                content: file.content,
+                language: file.language
+              };
+            });
+            
+            setFiles(loadedFiles);
+            setProjectId(urlProjectId);
+            console.log(`✅ Loaded project ${urlProjectId} with ${projectFiles.length} files`);
+          }
+        }
+      } catch (error: any) {
+        console.error("Error loading project:", error);
+        setMessages(prev => [...prev, {
+          id: generateId(),
+          role: 'system',
+          content: `Error loading project: ${error.message}`,
+          timestamp: Date.now()
+        }]);
+      } finally {
+        setIsLoadingProject(false);
+      }
+    };
+    
+    loadProject();
+  }, []);
+
+  useEffect(() => {
+    const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+    
+    if (!apiKey || apiKey === 'PLACEHOLDER_API_KEY') {
+        console.error("GEMINI_API_KEY is missing!");
         setMessages(prev => [...prev, {
             id: generateId(),
             role: 'system',
-            content: "Error: API_KEY is missing in environment variables.",
+            content: "⚠️ Error: VITE_GEMINI_API_KEY is missing or not configured. Please add your Gemini API key to .env.local",
             timestamp: Date.now()
         }]);
         return;
     }
 
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const ai = new GoogleGenAI({ apiKey });
     chatSessionRef.current = ai.chats.create({
       model: 'gemini-3-pro-preview',
       config: {
@@ -182,9 +236,53 @@ function App() {
       if (name === 'update_project_state') {
           const { summary, current_task, next_steps } = args;
           console.log("📝 [Aether Memory Saved]", { summary, current_task, next_steps });
-          // In a real app, this would save to a database. 
-          // Here we just confirm to the agent that the state is persisted.
-          return "Project state saved successfully. Context persisted for next turn.";
+          
+          // PHASE 4: Persist to Supabase
+          try {
+            let currentProjectId = projectId;
+            
+            // If no project exists, create one
+            if (!currentProjectId) {
+              const { data: newProject, error: projectError } = await supabase
+                .from('projects')
+                .insert({ title: summary || 'Untitled Project' })
+                .select()
+                .single();
+              
+              if (projectError) throw projectError;
+              currentProjectId = newProject.id;
+              setProjectId(currentProjectId);
+              
+              // Update URL with projectId
+              const url = new URL(window.location.href);
+              url.searchParams.set('projectId', currentProjectId);
+              window.history.pushState({}, '', url);
+            }
+            
+            // Upsert all current files to database
+            const currentFiles = filesRef.current;
+            const fileRecords = Object.entries(currentFiles).map(([path, fileObj]) => ({
+              project_id: currentProjectId,
+              path,
+              content: (fileObj as ProjectFile).content,
+              language: (fileObj as ProjectFile).language
+            }));
+            
+            const { error: filesError } = await supabase
+              .from('project_files')
+              .upsert(fileRecords, { 
+                onConflict: 'project_id,path',
+                ignoreDuplicates: false 
+              });
+            
+            if (filesError) throw filesError;
+            
+            console.log(`✅ Saved ${fileRecords.length} files to project ${currentProjectId}`);
+            return `Project state saved successfully. Context persisted for next turn. Project ID: ${currentProjectId}`;
+          } catch (error: any) {
+            console.error("Error saving project:", error);
+            return `Error saving project state: ${error.message}`;
+          }
       }
 
       return `Error: Unknown tool '${name}'`;
@@ -317,6 +415,19 @@ function App() {
     setSelectedFile(filename);
     setIsMobileExplorerOpen(false);
   };
+
+  if (isLoadingProject) {
+    return (
+      <div className="h-screen w-screen flex items-center justify-center bg-background text-text">
+        <div className="text-center">
+          <div className="w-10 h-10 bg-gradient-to-br from-emerald-500 to-teal-600 rounded-xl flex items-center justify-center shadow-lg shadow-emerald-500/20 mx-auto mb-4 animate-pulse">
+            <Activity className="w-6 h-6 text-white" />
+          </div>
+          <p className="text-muted">Loading project...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="h-screen w-screen flex flex-col md:flex-row bg-background text-text overflow-hidden">
